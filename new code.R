@@ -6,7 +6,7 @@ library(rpart.plot)
 library(party)
 library(skellam)
 library(DescTools)
-
+library(kableExtra)
 
 train = read.csv("EuroTraining.csv")
 test = read.csv("EuroTest.csv")
@@ -21,23 +21,24 @@ str(test)
 
 #Average Goals Per Tournament 
 
-mean(train$Goals, na.rm = TRUE)
-mean(test$Goals, na.rm = TRUE)
-
-# Distribution of goals
-table(train$Goals)
-table(test$Goals)
-
-# Average goal difference per Tournament
-avg_goals_year <- train %>%
+train_average <- train %>%
   group_by(Year) %>%
-  summarise(avg_goals = mean(Goals, na.rm = TRUE)) %>%
-  ungroup()
+  summarise(avg_goals = mean(Goals, na.rm = TRUE))
 
-print(avg_goals_year)
+test_average = test %>%
+  group_by(Year) %>%
+  summarise(avg_goals = mean(Goals, na.rm = TRUE))
+
+combine <- rbind(train_average, test_average)
+
+combine %>%
+  kable(format = "latex", booktabs = TRUE, longtable = TRUE,
+        caption = "Average Goal Difference per Tournament") %>%
+  kable_styling(latex_options = "scale_down")
+
 
 # Plot
-ggplot(avg_goals_year, aes(x = Year, y = avg_goals)) +
+ggplot(combine, aes(x = Year, y = avg_goals)) +
   geom_line(color = "blue") +
   geom_point(size = 2) +
   labs(title = "Average Goal Difference per Tournement",
@@ -46,22 +47,31 @@ ggplot(avg_goals_year, aes(x = Year, y = avg_goals)) +
 
 # Relationship between  goal difference and market value
 
-ggplot(train, aes(x = MarketValue, y = Goals)) +
-  geom_point(alpha = 0.6) +
-  geom_smooth(aes(x = MarketValue, y = Goals), 
-              method = "lm", se = FALSE, color = "red") +
-  labs(title = "Relationship between Market Value Difference and Goals",
-       x = "Market Value Difference (log-transformed)", y = "Goals")
-
+train %>%
+  mutate(MarketValue_bin = ntile(MarketValue, 10)) %>%
+  group_by(MarketValue_bin) %>%
+  summarise(avg_goals = mean(Goals, na.rm = TRUE)) %>%
+  ggplot(aes(x = MarketValue_bin, y = avg_goals)) +
+  geom_line(color = "blue") +
+  geom_point(size = 3, color = "red") +
+  labs(title = "Average Goal Difference by Market Value Deciles",
+       x = "Market Value Difference (deciles)",
+       y = "Average Goal Difference") +
+  theme_minimal()
 
 # Relationship between goals and CL players
 
-ggplot(train, aes(x = CLPlayers , y = Goals)) +
-  geom_point(alpha = 0.6) +
-  geom_smooth( aes(x = CLPlayers , y = Goals ),
-               method = "lm" , se = F , color = "darkgreen") +
-  labs(title = "Relationship between CLPlayers and Goal DIfference" ,
-       X = "Number of CL Payers" , Y = " Goals")
+train %>%
+  mutate(CLPlayers_bin = ntile(CLPlayers, 10)) %>%
+  group_by(CLPlayers_bin) %>%
+  summarise(avg_goals = mean(Goals, na.rm = TRUE)) %>%
+  ggplot(aes(x = CLPlayers_bin, y = avg_goals)) +
+  geom_line(color = "red") +
+  geom_point(size = 3, color = "green") +
+  labs(title = "Average Goal Difference by CLPlayers Deciles",
+       x = "CLPlayers Difference (deciles)",
+       y = "Average Goal Difference") +
+  theme_minimal()
 
 
 
@@ -97,23 +107,7 @@ mae_test
 
 
 
-######### extra
 
-library(boot)
-
-mae_fn <- function(data, indices) {
-  d <- data[indices, ]
-  fit <- glm(Goals ~ GDP + MarketValue + FifaRank + UefaPoints + CLPlayers,
-             data = d, family = poisson(link = "log"))
-  preds <- predict(fit, newdata = d, type = "response")
-  mean(abs(d$Goals - preds))
-}
-
-# 10-fold cross-validation
-cv_results <- cv.glm(train, pred_model , cost = function(y, yhat) mean(abs(y - yhat)), K = 10)
-cv_results$delta
-
-############# extra end 
 
 ######### drop the features that are not important
 

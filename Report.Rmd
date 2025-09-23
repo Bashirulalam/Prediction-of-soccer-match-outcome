@@ -1,0 +1,585 @@
+---
+title: ""   # leave empty because we build a custom cover page
+author: ""  
+date: ""    
+output:
+  pdf_document:
+fontsize: 12pt
+geometry: margin=1in
+header-includes:
+  - \usepackage{titling}
+  - \usepackage{graphicx}
+  - \usepackage{setspace}
+  - \usepackage{multicol}   # for two-column layout
+---
+
+\begin{titlepage}
+\centering
+\vspace*{1cm}
+
+
+\includegraphics[width=0.80\textwidth]{university_logo.png}\\[1.5cm]
+
+{\Huge \Large  Advanced Sports Analytics }\\[1cm]
+{\Huge \Large  Erasmus+ Blended Intensive Program (BIP) }\\[3cm]
+
+{\Huge \textbf{Analysis of Euro Football Data}}\\[5cm]
+
+{\large Faculty of Statistics}\\[0.5cm]
+{\large Master’s Degree Program in Data Science}\\[1cm]
+
+
+\begin{multicols}{2}
+\begin{flushleft}
+\textbf{Supervisor:}\\
+Prof. Dr. Andreas Groll\\
+Technical University of Dortmund
+\end{flushleft}
+
+\begin{flushright}
+\textbf{Student:}\\
+Bashirul Alam \\
+Matriculation No.: 123456
+\end{flushright}
+\end{multicols}
+
+\vfill
+\textbf{Academic Year:} 2024/2025
+
+\end{titlepage}
+\newpage
+\tableofcontents
+\newpage
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+## Introduction
+
+This report investigates the factors influencing team performance in the UEFA European Championship, with a focus on predicting the number of goals scored by each team in a match and translating these predictions into match outcome probabilities. Using data from several editions of the tournament, we apply both statistical and machine learning models to capture patterns in team performance.
+
+We begin by preparing and exploring the Euro dataset to ensure data quality and consistency across tournaments. Our first modeling approach uses **Poisson regression**, which is well-suited for handling count data such as goals. To account for potential nonlinear relationships and interactions between predictors, we extend the analysis with **regression trees** and **conditional inference forests**.
+
+Once expected goals for home and away teams are predicted, we employ the **Skellam distribution** to derive probabilities for win, draw, and loss outcomes. Model performance is then evaluated using the **Rank Probability Score (RPS)**, which allows for a fair comparison between competing approaches.
+
+This analysis not only identifies key variables—such as GDP, market value, FIFA ranking, UEFA coefficients, and Champions League experience—that contribute to football outcomes, but also compares the predictive strength of different modeling techniques. The ultimate aim is to highlight both the interpretability of statistical models and the flexibility of machine learning methods in understanding and forecasting football results.
+
+\newpage
+
+## Explanatory Data Analysis
+
+### Description of Dataset
+
+```{r message=FALSE, warning=FALSE, include=FALSE, output=FALSE}
+library(tidyverse)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(party)
+library(skellam)
+library(DescTools)
+library(kableExtra)
+```
+
+The UEFA Euro data are separated into a training set and a test set. The training data cover the tournaments from 2008 to 2020, while the test data contain matches from the 2024 European Championship.
+
+Each observation corresponds to a single match, with the outcome represented by the goal difference between the two teams. 
+
+The dataset includes the following predictors:
+
+-   **GroupStage**: Indicator variable (1 if the match was played in the group stage, 0 if in the knockout stage).
+
+-   **GDP**: Gross Domestic Product per capita of the respective country.
+
+-   **MarketValue**: Cumulative market value of the squad.
+
+-   **FifaRank**: FIFA ranking of the team before the tournament.
+
+-   **UefaPoints**: UEFA coefficient points of the team before the tournament.
+
+-   **CLPlayers**: Number of players in the squad who participated in the UEFA Champions League semifinal prior to the tournament.
+
+\vspace{2cm}
+
+
+```{r, warning=FALSE, message=FALSE}
+train = read.csv("EuroTraining.csv")
+test = read.csv("EuroTest.csv")
+
+head(train)
+
+```
+
+\newpage
+
+### Data Distribution
+
+In the data distribution, we first see the distribution of goals difference in different tournaments.
+
+```{r, warning=FALSE, message=FALSE}
+train_average <- train %>%
+  group_by(Year) %>%
+  summarise(avg_goals = mean(Goals, na.rm = TRUE))
+
+test_average = test %>%
+  group_by(Year) %>%
+  summarise(avg_goals = mean(Goals, na.rm = TRUE))
+
+combine <- rbind(train_average, test_average)
+
+combine %>%
+  kable(format = "latex", booktabs = TRUE, longtable = TRUE,
+        caption = "Average Goal Difference per Tournament") %>%
+  kable_styling(latex_options = "scale_down")
+
+```
+
+The average goal difference across tournaments stays fairly stable (1.1–1.3), reflecting the overall competitiveness of the Euros. Euro 2016 had the lowest average (1.04), while Euro 2020 peaked at 1.32, with Euro 2024 returning closer to the long-term mean.
+
+```{r}
+ggplot(combine, aes(x = Year, y = avg_goals)) +
+  geom_line(color = "blue") +
+  geom_point(size = 2) +
+  labs(title = "Average Goal Difference per Tournement",
+       x = "Tournament Year", y = "Average Goal difference")
+```
+
+\newpage
+
+### Relationship between  goal difference and market value
+
+```{r,  warning=FALSE, message=FALSE}
+train %>%
+  mutate(MarketValue_bin = ntile(MarketValue, 10)) %>%
+  group_by(MarketValue_bin) %>%
+  summarise(avg_goals = mean(Goals, na.rm = TRUE)) %>%
+  ggplot(aes(x = MarketValue_bin, y = avg_goals)) +
+  geom_line(color = "blue") +
+  geom_point(size = 3, color = "red") +
+  labs(title = "Average Goal Difference by Market Value Deciles",
+       x = "Market Value Difference (deciles)",
+       y = "Average Goal Difference") +
+  theme_minimal()
+```
+
+The line graph shows that teams with higher market value differences generally achieve larger positive goal differences, indicating that financially stronger squads tend to outperform their opponents. However, the trend is not perfectly linear, suggesting that while market value matters, it is not the only factor determining match outcomes.
+
+
+
+### Relationship between goal difference and CL players
+
+
+
+```{r}
+train %>%
+  mutate(CLPlayers_bin = ntile(CLPlayers, 10)) %>%
+  group_by(CLPlayers_bin) %>%
+  summarise(avg_goals = mean(Goals, na.rm = TRUE)) %>%
+  ggplot(aes(x = CLPlayers_bin, y = avg_goals)) +
+  geom_line(color = "red") +
+  geom_point(size = 3, color = "green") +
+  labs(title = "Average Goal Difference by CLPlayers Deciles",
+       x = "CLPlayers Difference (deciles)",
+       y = "Average Goal Difference") +
+  theme_minimal()
+```
+
+The plot shows that teams with more Champions League–experienced players generally achieve larger goal differences. This effect becomes especially strong from the 6th decile onward, where the advantage translates into significantly higher winning margins.
+
+
+
+\newpage
+
+## Models
+
+### Poisson model
+
+
+The Poisson regression model is a classical statistical approach for modeling count data, where the outcome variable represents the number of occurrences of an event within a fixed unit of time, space, or context. In our case, the event of interest is the goal difference in UEFA Euro matches. This model belongs to the family of generalized linear models (GLMs) and assumes that the response variable follows a Poisson distribution.
+
+The defining feature of the Poisson model is its ability to relate the expected count of events to a set of explanatory variables through a logarithmic link function. This ensures that predicted values remain non-negative, as is required for count data. The model is widely used in fields such as epidemiology, economics, and sports analytics, particularly when outcomes are discrete and non-negative.
+
+
+For match *i* with predictors $x_{i1}, x_{i2}, \dots, x_{ip}$:
+
+$$
+Y_i \sim \text{Poisson}(\lambda_i), \quad \lambda_i > 0
+$$
+
+The expected goal difference $\lambda_i$ is linked to the predictors through the log link:
+
+$$
+\log(\lambda_i) = \beta_0 + \beta_1 x_{i1} + \beta_2 x_{i2} + \cdots + \beta_p x_{ip}
+$$
+
+where:  
+
+- $Y_i$ is the observed goal difference in match $i$,  
+- $\lambda_i = \mathbb{E}[Y_i]$ is the expected goal difference,  
+- $\beta_0, \beta_1, \dots, \beta_p$ are the model coefficients to be estimated.  
+
+
+\newpage
+
+We fit the poisson model with all the features .
+```{r, warning = F, message=FALSE}
+pred_model = glm(Goals ~ GDP + MarketValue + FifaRank + UefaPoints + CLPlayers,
+                 data = train , family = poisson(link = "log"))
+
+summary(pred_model)
+```
+\vspace{1cm}
+
+Here we found that, GDP and Market Value are significant positive predictors of goals—higher values are associated with more expected goals. FIFA Rank and UEFA coefficient points are not significant, and Champions League players shows only a weak, non-significant effect. The model reduces deviance from 470.6 to 413.1 (12% explained) with AIC 1066.8, indicating a modest fit typical for goal-count data. Overall, financial strength appears more informative than ranking metrics in this specification.
+
+
+\vspace{1cm}
+
+Now, we predict train and test data using the fitted model. To see how this model perform in train and test data.
+
+
+```{r, warning=FALSE, message=FALSE}
+###### prediction on training data
+
+train$pred_goals = predict(pred_model, newdata = train, type = "response")
+
+train$abs_error <- abs(train$Goals - train$pred_goals)
+
+# Mean Absolute Error (MAE)
+mae_train <- mean(train$abs_error)
+
+
+#### prediction on test data
+
+test$pred_goals = predict(pred_model ,  newdata = test ,  type = "response")
+
+test$abs_error <- abs(test$Goals - test$pred_goals)
+
+mae_test <- mean(test$abs_error)
+
+mae_tbl <- data.frame(
+  Dataset = c("Training Data", "Testing Data"),
+  MAE = c(0.8381687, 0.7323236)
+)
+
+knitr::kable(mae_tbl, digits = 3)
+
+
+```
+\vspace{1cm}
+
+
+Here, we found that our **training** error is larger than the **testing** error, which is a bit unusual. We will drop the insignificant features, refit the model, and then calculate the training and testing errors for the new model.
+
+
+```{r, warning=FALSE,message=FALSE}
+pred_model_new <- glm(Goals ~ GDP + MarketValue,
+                data = train , family = poisson(link = "log"))
+
+summary(pred_model_new)
+
+
+```
+
+
+Our new model perform a little better. 
+
+
+```{r, warning=FALSE, message=FALSE}
+###### prediction on training data without features that are not important
+
+train$pred_goals_new = predict(pred_model_new, newdata = train, type = "response")
+
+train$abs_error_new <- abs(train$Goals - train$pred_goals_new)
+
+# Mean Absolute Error (MAE)
+mae_train_new <- mean(train$abs_error_new)
+
+
+#### prediction on test data
+
+test$pred_goals_new = predict(pred_model_new ,  newdata = test ,  type = "response")
+
+test$abs_error_new <- abs(test$Goals - test$pred_goals_new)
+
+mae_test_new <- mean(test$abs_error_new)
+
+mae_tmae_tbl <- data.frame(
+  Dataset = c("Training Data", "Testing Data"),
+  MAE = c(0.840966, 0.7307439)
+)
+
+knitr::kable(mae_tmae_tbl, digits = 3)
+
+
+```
+
+
+Our testing error is still lower than the training error. Now, we will fit regression tree to find out it it perform better than poisson model.
+
+\newpage
+
+### Regression Tree
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+train$GroupStage <- as.factor(train$GroupStage)
+
+# Fit regression tree 
+reg_tree_model <- rpart(
+  Goals ~ GroupStage + GDP + MarketValue + FifaRank + UefaPoints + CLPlayers,
+  data = train,
+  method = "anova"   # regression tree for numeric response
+)
+
+#Inspect model 
+summary(reg_tree_model)
+```
+
+
+
+```{r message=FALSE, warning=FALSE}
+rpart.plot(reg_tree_model, type = 2, extra = 1, fallen.leaves = TRUE,
+           main = "Regression Tree for Euro Goals")
+```
+\vspace{1cm}
+We fins out, the MarketValue is the most important feture, indicating it contributes the most to the model.FifaRank is the next most influential, while UEFA Points, CLPlayers, and GDP provide smaller incremental value.
+
+\vspace{2cm}
+```{r message=FALSE, warning=FALSE}
+important_feature <- reg_tree_model$variable.importance
+
+important_feature %>%
+  kable(format = "latex", booktabs = T, longtable = TRUE,
+        caption = "Importance of the features ") %>%
+  kable_styling(latex_options = "scale_down")
+
+```
+
+
+\newpage
+
+Now we will use the regression tree to predict for the train and test data set. Then we will calculate the train and test error.
+
+\vspace{1cm}
+```{r}
+#
+train$pred_reg_goals_tree <- predict(reg_tree_model, newdata = train)
+
+# Compute errors
+mae_reg_train_tree <- mean(abs(train$Goals - train$pred_reg_goals_tree))
+rmse_reg_train_tree <- sqrt(mean((train$Goals - train$pred_reg_goals_tree)^2))
+
+
+# --- Predictions on test data ---
+test$GroupStage <- as.factor(test$GroupStage)
+
+test$pred_reg_goals_tree <- predict(reg_tree_model, newdata = test)
+
+# Compute errors
+mae_reg_test_tree <- mean(abs(test$Goals - test$pred_reg_goals_tree))
+rmse_reg_test_tree <- sqrt(mean((test$Goals - test$pred_reg_goals_tree)^2))
+
+
+
+mae_tbl <- data.frame(
+  Dataset = c("Training Data", "Testing Data"),
+  MAE = c(0.7788857, 0.7836336),
+  RMSE = c(0.9710545,1.054863)
+)
+
+knitr::kable(mae_tbl, digits = 3)
+
+```
+
+\vspace{2cm}
+
+### conditional inference model
+
+Now, we will train a conditional inference model to our data set.
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)  # reproducibility
+
+cf_ctrl <- cforest_unbiased(mtry = 3, ntree = 1000)  # mtry ≈ sqrt(#predictors)
+cforest_model <- cforest(
+  Goals ~ GroupStage + GDP + MarketValue + FifaRank + UefaPoints + CLPlayers,
+  data = train,
+  controls = cf_ctrl
+)
+
+imp_fea <- varimp(cforest_model)
+
+
+imp_fea %>%
+  kable(format = "latex", booktabs = T, longtable = TRUE,
+        caption = "Importance of the features ") %>%
+  kable_styling(latex_options = "scale_down")
+
+
+```
+
+The conditional inference model flags MarketValue as the dominant driver, with smaller but meaningful contributions from CLPlayers and GDP. FIFA Rank and UEFA Points add limited signal, while GroupStage shows slightly negative importance, suggesting no real predictive value.
+
+
+
+\vspace{1cm}
+
+Now , we will combine the training ans testing data set. And run k fold cross validation on both regression tree model and conditional inference model. Then we will compare the model performance using rank probability score.
+
+\newpage
+
+```{r message=FALSE, warning=FALSE}
+Euro_full <- rbind(train, test)
+
+Euro_full$GroupStage <- as.factor(Euro_full$GroupStage)
+
+# --- Distinct tournaments (Years) ---
+years <- sort(unique(Euro_full$Year))
+K <- length(years)
+
+# --- Rank Probability Score function ---
+rank_prob_score <- function(pred_matrix, obs) {
+  n <- nrow(pred_matrix)
+  C <- ncol(pred_matrix)
+  
+  # One-hot encode observations
+  obs_mat <- matrix(0, n, C)
+  obs_mat[cbind(1:n, as.integer(obs))] <- 1
+  
+  # Cumulative sums
+  P_cum <- t(apply(pred_matrix, 1, cumsum))
+  O_cum <- t(apply(obs_mat, 1, cumsum))
+  
+  # RPS
+  mean(rowSums((P_cum - O_cum)^2) / (C - 1))
+}
+
+# --- Helper: outcome probs from Skellam ---
+get_probs <- function(lambda_home, lambda_away, max_goals = 10) {
+  goal_diff <- -max_goals:max_goals
+  probs <- dskellam(goal_diff, lambda_home, lambda_away)
+  p_home <- sum(probs[goal_diff > 0])
+  p_draw <- probs[goal_diff == 0]
+  p_away <- sum(probs[goal_diff < 0])
+  return(c(HomeWin = p_home, Draw = p_draw, AwayWin = p_away))
+}
+
+# --- Storage for results ---
+results <- data.frame(
+  Year = integer(),
+  Model = character(),
+  RPS = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# --- Cross-validation loop ---
+set.seed(123)
+for (yr in years) {
+  train_data <- subset(Euro_full, Year != yr)
+  test_data  <- subset(Euro_full, Year == yr)
+  
+  # Fit models
+  tree_model <- rpart(
+    Goals ~ GroupStage + GDP + MarketValue + FifaRank + UefaPoints + CLPlayers,
+    data = train_data, method = "anova"
+  )
+  
+  cf_model <- cforest(
+    Goals ~ GroupStage + GDP + MarketValue + FifaRank + UefaPoints + CLPlayers,
+    data = train_data,
+    controls = cforest_unbiased(mtry = 3, ntree = 500)
+  )
+  
+  # Predict expected goals
+  test_data$pred_tree <- predict(tree_model, newdata = test_data)
+  test_data$pred_cf   <- unlist(predict(cf_model, newdata = test_data, OOB = TRUE))
+  
+  # Identify matches: each match = two rows (team vs opponent)
+  match_ids <- unique(paste0(test_data$Year, "_", pmin(test_data$Team, test_data$Opponent),
+                             "_", pmax(test_data$Team, test_data$Opponent)))
+  
+  # Storage for probabilities
+  probs_tree <- matrix(NA, nrow = length(match_ids), ncol = 3)
+  probs_cf   <- matrix(NA, nrow = length(match_ids), ncol = 3)
+  obs_vec    <- integer(length(match_ids))
+  
+  row_idx <- 1
+  for (m in match_ids) {
+    match_rows <- which(paste0(test_data$Year, "_", 
+                               pmin(test_data$Team, test_data$Opponent), "_",
+                               pmax(test_data$Team, test_data$Opponent)) == m)
+    if (length(match_rows) != 2) next
+    
+    # Extract true goals
+    g1 <- test_data$Goals[match_rows[1]]
+    g2 <- test_data$Goals[match_rows[2]]
+    
+    # Determine outcome
+    if (g1 > g2) outcome <- 1   # HomeWin
+    else if (g1 == g2) outcome <- 2  # Draw
+    else outcome <- 3   # AwayWin
+    
+    # Predicted lambdas
+    lambda1_tree <- test_data$pred_tree[match_rows[1]]
+    lambda2_tree <- test_data$pred_tree[match_rows[2]]
+    
+    lambda1_cf <- test_data$pred_cf[match_rows[1]]
+    lambda2_cf <- test_data$pred_cf[match_rows[2]]
+    
+    # Compute outcome probabilities
+    probs_tree[row_idx, ] <- get_probs(lambda1_tree, lambda2_tree)
+    probs_cf[row_idx, ]   <- get_probs(lambda1_cf, lambda2_cf)
+    obs_vec[row_idx] <- outcome
+    
+    row_idx <- row_idx + 1
+  }
+  
+  # Compute RPS for this fold
+  rps_tree <- rank_prob_score(probs_tree, obs_vec)
+  rps_cf   <- rank_prob_score(probs_cf, obs_vec)
+  
+  results <- rbind(results,
+                   data.frame(Year = yr, Model = "Tree", RPS = rps_tree),
+                   data.frame(Year = yr, Model = "Cforest", RPS = rps_cf))
+}
+
+# --- Final average RPS per model ---
+agg <- aggregate(RPS ~ Model, data = results, mean)
+
+agg%>%
+  kable(format = "latex", booktabs = T, longtable = TRUE,
+        caption = "Rank Probability Score ") %>%
+  kable_styling(latex_options = "scale_down")
+
+```
+
+
+
+Lower RPS is better, so the cforest model (0.193) outperforms the single tree (0.201) on probabilistic accuracy for the ordered outcomes. The gap is modest (~0.0085, 4% improvement), suggesting more stable, better-calibrated forecasts from cforest.
+
+
+
+
+\newpage
+
+## Conclusion
+
+This report set out to explain and predict team performance at the UEFA European Championship by modeling goals and translating them into match-outcome probabilities. Exploratory analysis showed a stable average goal-difference across tournaments and clear associations between financial strength (market value) and performance, with Champions League experience adding signal at higher deciles.&#x20;
+
+Across models, financial variables dominated: in Poisson regression, **GDP** and **Market Value** were the only consistently significant predictors of goals, and a reduced model with just those two achieved a lower AIC with only a small loss in deviance fit. Regression trees and conditional inference forests confirmed **Market Value** as the most influential feature.&#x20;
+
+In out-of-sample evaluation, errors for tree models were similar between train and test, indicating reasonable generalization, while rank probability score favored the **cforest** over a single tree (0.193 vs 0.201), suggesting better calibrated probabilistic forecasts. Overall, financial depth appears more informative than ranking-based metrics for explaining goal outcomes, though there remains headroom for improvement via richer match context (home/away, opponent strength), variance-robust count models, and hierarchical structures to capture team effects in future work.&#x20;
+
+
+
+
+
+
+
+
+
+
+
+
+
